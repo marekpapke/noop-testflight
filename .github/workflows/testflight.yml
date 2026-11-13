@@ -22,6 +22,7 @@ env:
   UPSTREAM: ryanbr/noop
   TEAM_ID: Z4AK89R29U
   BUNDLE_PREFIX: tv.gerdon           # ergibt tv.gerdon.noop
+  REFRESH_DAYS: 75                   # spätestens nach so vielen Tagen neu bauen (TestFlight-Builds laufen 90 Tage)
 
 concurrency:
   group: noop-testflight
@@ -49,12 +50,19 @@ jobs:
                  | sed 's|.*refs/tags/||' | grep -E '^v?[0-9]' | sort -V | tail -1)"
           if [ -z "$TAG" ]; then echo "Kein Release-Tag gefunden"; exit 1; fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Letzter Build-Zeitpunkt aus den Merkern "built-at/JJJJMMTTHHMM"
+          LAST_AT="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/built-at/" --jq '.[].ref' 2>/dev/null \
+                     | sed 's|.*/||' | sort -n | tail -1)"
+          LIMIT="$(date -u -d "${REFRESH_DAYS} days ago" +%Y%m%d%H%M)"
+          echo "Letzter Build: ${LAST_AT:-unbekannt}, Auffrischung fällig vor: $LIMIT"
           if [ "$FORCE" = "true" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"; echo "Erzwungen: $TAG"
-          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/built/$TAG" >/dev/null 2>&1; then
-            echo "build=false" >> "$GITHUB_OUTPUT"; echo "$TAG schon gebaut, nichts zu tun."
-          else
+          elif ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/built/$TAG" >/dev/null 2>&1; then
             echo "build=true" >> "$GITHUB_OUTPUT"; echo "Neuer Release: $TAG"
+          elif [ -z "$LAST_AT" ] || [ "$LAST_AT" -lt "$LIMIT" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "Auffrischung: letzter Build älter als $REFRESH_DAYS Tage"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"; echo "$TAG schon gebaut, Build noch frisch. Nichts zu tun."
           fi
 
   build:
@@ -178,6 +186,8 @@ jobs:
         run: |
           gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/built/$TAG" -f sha="$GITHUB_SHA" >/dev/null || echo "Merker-Tag existiert schon"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/built-at/$BUILD_NO" -f sha="$GITHUB_SHA" >/dev/null
 
       - name: Aufräumen
         if: always()
